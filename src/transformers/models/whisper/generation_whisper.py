@@ -1081,11 +1081,14 @@ class WhisperGenerationMixin:
             generation_config.task = task
 
     def _retrieve_init_tokens(self, input_features, generation_config, config, num_segment_frames, kwargs):
-        def replace_or_add(lst: List[int], num: int, itr: Iterator[int]):
+        def replace_or_add(lst: List[Union[int, torch.Tensor]], num: int, itr: Iterator[int]):
             """short function to replace num with a itr in lst"""
-            found = any(i in lst for i in itr)
+            # Ignore any Tensors in the list, as they are from detected languages when no other
+            # language was passed in directly
+            int_tokens = [i for i in lst if isinstance(i, int)]
+            found = any(i in int_tokens for i in itr)
             if found:
-                lst = [num if i in itr else i for i in lst]
+                lst = [num if isinstance(i, int) and i in itr else i for i in lst]
             else:
                 lst.append(num)
             return lst
@@ -1170,18 +1173,15 @@ class WhisperGenerationMixin:
                 num_segment_frames=num_segment_frames,
             )
 
-            if torch.unique(lang_ids).shape[0] > 1:
-                raise ValueError(
-                    "Multiple languages detected when trying to predict the most likely target language for transcription. It is currently not supported to transcribe to different languages in a single batch. Please make sure to either force a single language by passing `language='...'` or make sure all input audio is of the same language."
-                )
-
-            lang_id = lang_ids[0].item()
+            # lang_ids is a (batch_size,) tensor, we need a (batch_size, 1) tensor so it "just works"
+            # when multiplying by a ones tensor of the same size and won't require any other changes
+            lang_ids = lang_ids.unsqueeze(dim=1)
 
             # append or replace lang_id to init_tokens
             if len(init_tokens) > 1:
-                init_tokens[1] = lang_id
+                init_tokens[1] = lang_ids
             else:
-                init_tokens.append(lang_id)
+                init_tokens.append(lang_ids)
 
         if task is not None:
             if task in TASK_IDS:
@@ -1500,8 +1500,12 @@ class WhisperGenerationMixin:
     ):
         cut_off_length = config.max_target_positions // 2 - 1
 
+        # For Tensor init tokens, we have one per batch entry, so make sure we grab the entries
+        # corresponding to the remaining entries in the batch
+        cur_batch_init_tokens = [t if isinstance(t, int) else t[batch_idx_map] for t in init_tokens]
+
         one_tensor = torch.ones((cur_bsz, 1), device=device, dtype=torch.long)
-        decoder_input_ids = torch.cat([t * one_tensor for t in init_tokens], dim=-1)
+        decoder_input_ids = torch.cat([t * one_tensor for t in cur_batch_init_tokens], dim=-1)
 
         prev_start_of_text = getattr(generation_config, "prev_sot_token_id", None)
         if prev_start_of_text is None:

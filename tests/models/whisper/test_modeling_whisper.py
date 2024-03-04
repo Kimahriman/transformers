@@ -2101,6 +2101,42 @@ class WhisperModelIntegrationTests(unittest.TestCase):
         assert ids_to_lang[lang_id] == "<|hi|>"
 
     @slow
+    def test_multiple_language_transcription(self):
+        processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
+        model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
+        model.to(torch_device)
+
+        # English audio
+        input_speech = self._load_datasamples(4)[-1:]
+        en_input_features = processor(input_speech, return_tensors="pt").input_features.to(torch_device)
+
+        # Hindi audio
+        audio = hf_hub_download("Narsil/asr_dummy", filename="hindi.ogg", repo_type="dataset")
+        raw_audio, sr = torchaudio.load(audio)
+        input_speech = torchaudio.transforms.Resample(sr, 16_000)(raw_audio).numpy()
+        hi_input_features = processor(input_speech, return_tensors="pt").input_features.to(torch_device)
+
+        input_features = torch.cat([en_input_features, hi_input_features])
+
+        ids_to_lang = {v: k for k, v in model.generation_config.lang_to_id.items()}
+        lang_ids = model.detect_language(input_features)
+
+        assert ids_to_lang[lang_ids[0].item()] == "<|en|>"
+        assert ids_to_lang[lang_ids[1].item()] == "<|hi|>"
+
+        sequences = model.generate(input_features=input_features)
+
+        transcriptions = processor.batch_decode(sequences, skip_special_tokens=False)
+        assert (
+            transcriptions[0]
+            == "<|startoftranscript|><|en|><|transcribe|><|notimestamps|> He has grave doubts whether Sir Frederick Layton's work is really Greek after all and can discover in it but little of Rocky Ithaca.<|endoftext|>"
+        )
+        # Ignore repeated endoftext tokens
+        assert (
+            transcriptions[1].startswith("<|startoftranscript|><|hi|><|transcribe|><|notimestamps|> Mirchi mein ki tene vibinda prajatiya hai<|endoftext|>")
+        )
+
+    @slow
     def test_default_multilingual_transcription_short_form(self):
         processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
         model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
