@@ -2136,6 +2136,18 @@ class WhisperModelIntegrationTests(unittest.TestCase):
             transcriptions[1].startswith("<|startoftranscript|><|hi|><|transcribe|><|notimestamps|> Mirchi mein ki tene vibinda prajatiya hai<|endoftext|>")
         )
 
+        sequences = model.generate(input_features=input_features, task='translate')
+
+        transcriptions = processor.batch_decode(sequences, skip_special_tokens=False)
+        assert (
+            transcriptions[0]
+            == "<|startoftranscript|><|en|><|translate|><|notimestamps|> He has grave doubts whether Sir Frederick Layton's work is really Greek after all and can discover in it but little of Rocky Ithaca.<|endoftext|>"
+        )
+        # Ignore repeated endoftext tokens
+        assert (
+            transcriptions[1].startswith("<|startoftranscript|><|hi|><|translate|><|notimestamps|> How much is the difference between the girls?<|endoftext|>")
+        )
+
     @slow
     def test_default_multilingual_transcription_short_form(self):
         processor = WhisperProcessor.from_pretrained("openai/whisper-tiny")
