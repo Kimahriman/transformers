@@ -16,6 +16,7 @@ import copy
 import math
 import warnings
 import zlib
+from dataclasses import dataclass
 from typing import Callable, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
@@ -32,8 +33,10 @@ from ...generation.logits_process import (
     WhisperTimeStampLogitsProcessor,
 )
 from ...generation.stopping_criteria import StoppingCriteriaList
+from ...generation.utils import GenerateOutput
 from ...modeling_outputs import BaseModelOutput
 from ...utils import logging
+from ...utils.generic import ModelOutput
 from .tokenization_whisper import TASK_IDS, TO_LANGUAGE_CODE
 
 
@@ -154,6 +157,34 @@ def _pad_to_max_length(current_segments, pad_token_id, padding="right", bos_toke
     return sequences
 
 
+@dataclass
+class WhisperLongformSegment:
+    """
+    Outputs for a single segment of longform generation
+    """
+
+    start: torch.FloatTensor
+    end: torch.FloatTensor
+    tokens: torch.LongTensor
+    result: Union[GenerateOutput, torch.LongTensor]
+    token_timestamps: Optional[torch.LongTensor]
+
+
+@dataclass
+class WhisperLongformGenerateOutput(ModelOutput):
+    """
+    Outputs of Whisper long form generation.
+
+    Args:
+        sequences (`torch.LongTensor` of shape `(batch_size*num_return_sequences, sequence_length)`):
+            The generated sequences.
+        segments 
+    """
+
+    sequences: torch.LongTensor
+    segments: Optional[List[WhisperLongformSegment]] = None
+
+
 class WhisperGenerationMixin:
     def _extract_token_timestamps(self, generate_outputs, alignment_heads, time_precision=0.02, num_frames=None):
         """
@@ -264,6 +295,7 @@ class WhisperGenerationMixin:
         task: Optional[str] = None,
         language: Optional[str] = None,
         is_multilingual: Optional[bool] = None,
+        force_longform: bool = False,
         prompt_ids: Optional[torch.Tensor] = None,
         prompt_condition_type: Optional[str] = None,  # first-segment, all-segments
         condition_on_prev_tokens: Optional[bool] = None,
@@ -334,6 +366,8 @@ class WhisperGenerationMixin:
                 find all the possible language tokens in the `model.generation_config.lang_to_id` dictionary.
             is_multilingual (`bool`, *optional*):
                 Whether or not the model is multilingual.
+            force_longform (`bool`, *optional*, defaults to `False`):
+                Force longform generation even for short audio.
             prompt_ids (`torch.Tensor`, *optional*):
                 Rank-1 tensor of token IDs created by passing text to [`~WhisperProcessor.get_prompt_ids`] that is
                 provided as a prompt to each chunk. This can be used to provide or "prompt-engineer" a context for
@@ -486,7 +520,7 @@ class WhisperGenerationMixin:
         batch_size, total_input_frames = self._retrieve_total_input_frames(
             input_features=input_features, input_stride=input_stride, kwargs=kwargs
         )
-        is_shortform = total_input_frames <= num_segment_frames
+        is_shortform = total_input_frames <= num_segment_frames and not force_longform
 
         if is_shortform:
             # warn user of ignored inputs
@@ -610,7 +644,10 @@ class WhisperGenerationMixin:
         batch_size = input_features.shape[0]
 
         max_frames, seek = self._retrieve_max_frames_and_seek(
-            batch_size=batch_size, attention_mask=attention_mask, total_input_frames=total_input_frames
+            batch_size=batch_size,
+            attention_mask=attention_mask,
+            total_input_frames=total_input_frames,
+            num_segment_frames=num_segment_frames
         )
 
         # 6.2 Preppare running variables, list for generation
@@ -671,6 +708,7 @@ class WhisperGenerationMixin:
             # 6.6 set max new tokens or max length
             kwargs = self._set_max_new_tokens_and_length(
                 config=self.config,
+                init_tokens=init_tokens,
                 decoder_input_ids=decoder_input_ids,
                 generation_config=generation_config,
                 kwargs=kwargs,
@@ -732,13 +770,24 @@ class WhisperGenerationMixin:
             if (prompt_ids is not None and generation_config.prompt_condition_type == "first-segment")
             else current_segments
         )
-        sequences = _pad_to_max_length(final_segments, generation_config.pad_token_id, padding="right")
+        
+        # Add back prompt ids and init tokens to the segments as if it was all done in one shot
+        init_tokens = torch.tensor(init_tokens, dtype=torch.long)
+        if prompt_ids is not None:
+            init_tokens = torch.cat([prompt_ids, init_tokens])
 
-        # 8. If we return all segments, the predicted output sequences are put under `"sequences"`.
+        sequences = _pad_to_max_length(final_segments, generation_config.pad_token_id, padding="right",
+                                       bos_token_tensor=init_tokens)
+
         if return_segments:
-            return {"sequences": sequences, "segments": final_segments}
+            return WhisperLongformGenerateOutput(sequences, segments=final_segments)
+        # Explicitly check the generate function argument, not the generation_config we overrode for
+        # individual segment generation
+        elif return_dict_in_generate:
+            return WhisperLongformGenerateOutput(sequences)
+        else:
+            return sequences
 
-        return sequences
 
     def generate_with_fallback(
         self,
@@ -813,7 +862,7 @@ class WhisperGenerationMixin:
                         seek_outputs[i]["token_timestamps"] = seek_outputs[i]["token_timestamps"][:-1]
 
                 # remove all padding tokens
-                if seek_sequence[-1] == generation_config.pad_token_id:
+                if is_not_final and seek_sequence[-1] == generation_config.pad_token_id:
                     num_paddings = (seek_sequence == generation_config.pad_token_id).sum()
                     seek_sequence = seek_sequence[:-num_paddings]
                     if return_token_timestamps:
@@ -1023,15 +1072,15 @@ class WhisperGenerationMixin:
 
     @staticmethod
     def _set_return_timestamps(return_timestamps, is_shortform, generation_config):
-        if not is_shortform:
-            if return_timestamps is False:
-                raise ValueError(
-                    "You have passed more than 3000 mel input features (> 30 seconds) which automatically enables long-form generation which "
-                    "requires the model to predict timestamp tokens. Please either pass `return_timestamps=True` or make sure to pass no more than 3000 mel input features."
-                )
+        # if not is_shortform:
+        #     if return_timestamps is False:
+        #         raise ValueError(
+        #             "You have passed more than 3000 mel input features (> 30 seconds) which automatically enables long-form generation which "
+        #             "requires the model to predict timestamp tokens. Please either pass `return_timestamps=True` or make sure to pass no more than 3000 mel input features."
+        #         )
 
-            logger.info("Setting `return_timestamps=True` for long-form generation.")
-            return_timestamps = True
+        #     logger.info("Setting `return_timestamps=True` for long-form generation.")
+        #     return_timestamps = True
 
         if return_timestamps and not hasattr(generation_config, "no_timestamps_token_id"):
             raise ValueError(
@@ -1371,17 +1420,18 @@ class WhisperGenerationMixin:
         generation_config.condition_on_prev_tokens = condition_on_prev_tokens
 
     @staticmethod
-    def _retrieve_max_frames_and_seek(batch_size, attention_mask, total_input_frames):
-        if batch_size > 1 and attention_mask is None:
-            raise ValueError(
-                "When doing batched long-form audio transcription, make sure to pass an `attention_mask`. You can retrieve the `attention_mask` by doing `processor(audio, ..., return_attention_mask=True)` "
-            )
-        elif batch_size > 1:
-            max_frames = attention_mask.sum(-1).cpu().to(torch.long)
-            seek = torch.zeros((batch_size,), dtype=torch.long)
+    def _retrieve_max_frames_and_seek(batch_size, attention_mask, total_input_frames, num_segment_frames):
+        if batch_size > 1 and total_input_frames > num_segment_frames:
+            if attention_mask is not None:
+                max_frames = attention_mask.sum(-1).cpu().to(torch.long)
+            else:
+                raise ValueError(
+                    "When doing batched long-form audio transcription, make sure to pass an `attention_mask`. You can retrieve the `attention_mask` by doing `processor(audio, ..., return_attention_mask=True)` "
+                )
         else:
-            max_frames = torch.ones((1,), dtype=torch.long) * total_input_frames
-            seek = torch.zeros((1,), dtype=torch.long)
+            max_frames = torch.ones((batch_size,), dtype=torch.long) * total_input_frames
+
+        seek = torch.zeros((batch_size,), dtype=torch.long)
 
         return max_frames, seek
 
@@ -1514,11 +1564,11 @@ class WhisperGenerationMixin:
         return decoder_input_ids, kwargs
 
     @staticmethod
-    def _set_max_new_tokens_and_length(config, decoder_input_ids, generation_config, kwargs):
-        num_initial_tokens = min(config.max_target_positions // 2 - 1, decoder_input_ids.shape[-1] - 1)
+    def _set_max_new_tokens_and_length(config, init_tokens, decoder_input_ids, generation_config, kwargs):
+        num_initial_tokens = min(config.max_target_positions // 2 - 1, decoder_input_ids.shape[-1] - len(init_tokens))
 
-        passed_max_length = kwargs.pop("max_length", None)
-        passed_max_new_tokens = kwargs.pop("max_new_tokens", None)
+        passed_max_length = kwargs.get("max_length", None)
+        passed_max_new_tokens = kwargs.get("max_new_tokens", None)
         max_length_config = getattr(generation_config, "max_length", None)
         max_new_tokens_config = getattr(generation_config, "max_new_tokens", None)
 
