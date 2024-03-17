@@ -1362,7 +1362,12 @@ class WhisperModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
                 )
                 # First tokens are prompt_ids, bos, language, and task, and then we shouldn't see
                 # any of the supressed tokens again
-                assert output[0, :8].tolist() == [*prompt_ids.tolist(), model.generation_config.decoder_start_token_id, lang_id, task_id]
+                assert output[0, :8].tolist() == [
+                    *prompt_ids.tolist(),
+                    model.generation_config.decoder_start_token_id,
+                    lang_id,
+                    task_id,
+                ]
                 assert not any(i in output[0, 8:] for i in model.generation_config.suppress_tokens)
 
     def _check_longform_generate_single_batch(self, condition_on_prev_tokens):
@@ -2007,7 +2012,9 @@ class WhisperModelIntegrationTests(unittest.TestCase):
         )
 
         inputs = inputs.to(torch_device)
-        generate_outputs = model.generate(**inputs, return_segments=True, return_timestamps=True, return_token_timestamps=True)
+        generate_outputs = model.generate(
+            **inputs, return_segments=True, return_timestamps=True, return_token_timestamps=True
+        )
 
         token_timestamps_shape = [
             [segment["token_timestamps"].shape for segment in segment_list]
@@ -2081,17 +2088,24 @@ class WhisperModelIntegrationTests(unittest.TestCase):
         input_speech = self._load_datasamples(4)[-1:]
         input_features = processor(input_speech, return_tensors="pt").input_features.to(torch_device)
 
-        output_without_prompt = model.generate(input_features)
+        output_without_prompt = model.generate(input_features, return_timestamps=True)
         prompt_ids = processor.get_prompt_ids("Leighton", return_tensors="pt").to(torch_device)
-        output_with_prompt = model.generate(input_features, prompt_ids=prompt_ids)
+        output_with_prompt = model.generate(input_features, prompt_ids=prompt_ids, return_timestamps=True)
 
-        expected_without_prompt = "<|startoftranscript|><|en|><|transcribe|><|notimestamps|> He has grave doubts whether Sir Frederick Layton's work is really Greek after all and can discover in it but little of Rocky Ithaca.<|endoftext|>"
-        expected_with_prompt = "<|startofprev|> Leighton<|startoftranscript|><|en|><|transcribe|><|notimestamps|> He has grave doubts whether Sir Frederick Leighton's work is really Greek after all and can discover in it but little of Rocky Ithaca.<|endoftext|>"
+        expected_without_prompt = "<|startoftranscript|><|en|><|transcribe|> He has grave doubts whether Sir Frederick Layton's work is really Greek after all and can discover in it but little of Rocky Ithaca.<|endoftext|>"
+        expected_with_prompt = "<|startofprev|> Leighton<|startoftranscript|><|en|><|transcribe|> He has grave doubts whether Sir Frederick Leighton's work is really Greek after all and can discover in it but little of Rocky Ithaca.<|endoftext|>"
 
         output_without_prompt = processor.decode(output_without_prompt[0])
         output_with_prompt = processor.decode(output_with_prompt[0])
 
         self.assertEqual(output_without_prompt, expected_without_prompt)
+        self.assertEqual(output_with_prompt, expected_with_prompt)
+
+        # Longform should yield the same results
+        output_with_prompt = model.generate(
+            input_features, prompt_ids=prompt_ids, force_longform=True, return_timestamps=True
+        )
+        output_with_prompt = processor.decode(output_with_prompt[0])
         self.assertEqual(output_with_prompt, expected_with_prompt)
 
     @slow
@@ -2174,10 +2188,12 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         transcription = processor.batch_decode(sequences)[0]
 
-        assert transcription == "<|startoftranscript|><|hi|><|transcribe|> मिर्ची में कितने विबिन्द प्रजातियां हैं? मिर्ची में कितने विबिन्द प्रजातियां हैं?<|endoftext|>"
+        assert (
+            transcription
+            == "<|startoftranscript|><|hi|><|transcribe|> मिर्ची में कितने विबिन्द प्रजातियां हैं? मिर्ची में कितने विबिन्द प्रजातियां हैं?<|endoftext|>"
+        )
 
-
-        sequences = model.generate(input_features, task='translate')
+        sequences = model.generate(input_features, task="translate")
         transcription = processor.batch_decode(sequences)[0]
 
         assert (

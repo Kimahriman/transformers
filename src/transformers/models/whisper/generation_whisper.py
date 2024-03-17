@@ -178,7 +178,8 @@ class WhisperLongformGenerateOutput(ModelOutput):
     Args:
         sequences (`torch.LongTensor` of shape `(batch_size*num_return_sequences, sequence_length)`):
             The generated sequences.
-        segments 
+        segments (List of `~WhisperLongformSegment`, *optional*)
+            The list of individual segments.
     """
 
     sequences: torch.LongTensor
@@ -433,10 +434,10 @@ class WhisperGenerationMixin:
                 specific kwargs should not be prefixed and decoder specific kwargs should be prefixed with *decoder_*.
 
         Return:
-            [`~utils.ModelOutput`] or `torch.LongTensor` or `Dict[str, Any]`: A [`~utils.ModelOutput`] (if `return_dict_in_generate=True`
-            or when `config.return_dict_in_generate=True`) or a `torch.FloatTensor` or a dict of segments when `return_segments=True`.
+            [`~utils.ModelOutput`] or `torch.LongTensor`: A [`~utils.ModelOutput`] (if `return_dict_in_generate=True`,
+            when `config.return_dict_in_generate=True`, or when `return_segments=True`).
 
-                If the passed input is > 30 seconds / > 3000 mel input features and `return_segments=True` then a dictionary of generated sequence ids, called `sequences` and a list of each generated segment is returned.
+                If the passed input is > 30 seconds / > 3000 mel input features or `force_longform` is true, the returned [`~utils.ModelOutput`] type is [~`WhisperLongformGenerateOutput`]
 
                 else if the passed input is <= 30 seconds / >= 3000 mel input features, the possible [`~utils.ModelOutput`] types are:
 
@@ -647,7 +648,7 @@ class WhisperGenerationMixin:
             batch_size=batch_size,
             attention_mask=attention_mask,
             total_input_frames=total_input_frames,
-            num_segment_frames=num_segment_frames
+            num_segment_frames=num_segment_frames,
         )
 
         # 6.2 Preppare running variables, list for generation
@@ -770,24 +771,26 @@ class WhisperGenerationMixin:
             if (prompt_ids is not None and generation_config.prompt_condition_type == "first-segment")
             else current_segments
         )
-        
+
         # Add back prompt ids and init tokens to the segments as if it was all done in one shot
         init_tokens = torch.tensor(init_tokens, dtype=torch.long)
         if prompt_ids is not None:
             init_tokens = torch.cat([prompt_ids, init_tokens])
 
-        sequences = _pad_to_max_length(final_segments, generation_config.pad_token_id, padding="right",
-                                       bos_token_tensor=init_tokens)
+        sequences = _pad_to_max_length(
+            final_segments, generation_config.pad_token_id, padding="right", bos_token_tensor=init_tokens
+        )
 
         if return_segments:
-            return WhisperLongformGenerateOutput(sequences, segments=final_segments)
+            return WhisperLongformGenerateOutput(
+                sequences, segments=[WhisperLongformSegment(**segment) for segment in final_segments]
+            )
         # Explicitly check the generate function argument, not the generation_config we overrode for
         # individual segment generation
         elif return_dict_in_generate:
             return WhisperLongformGenerateOutput(sequences)
         else:
             return sequences
-
 
     def generate_with_fallback(
         self,
