@@ -1739,12 +1739,18 @@ class WhisperModelIntegrationTests(unittest.TestCase):
             torch_device
         )
 
+        # Return timestamps to match longform method to compare
         generated_ids = model.generate(
-            input_features, do_sample=False, max_length=20, language="<|en|>", task="transcribe"
+            input_features,
+            do_sample=False,
+            max_length=20,
+            language="<|en|>",
+            task="transcribe",
+            return_timestamps=True,
         )
         transcript = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
-        EXPECTED_TRANSCRIPT = " Mr. Quilter is the apostle of the middle classes and we are glad"
+        EXPECTED_TRANSCRIPT = " Mr. Quilter is the apostle of the middle classes, and we are"
         self.assertEqual(transcript, EXPECTED_TRANSCRIPT)
 
         # Same transcript with longform generation

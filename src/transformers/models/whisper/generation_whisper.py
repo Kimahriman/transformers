@@ -17,7 +17,7 @@ import math
 import warnings
 import zlib
 from dataclasses import dataclass
-from typing import Callable, Iterator, List, Optional, Tuple, Union
+from typing import Callable, Iterator, List, Optional, Tuple, TypedDict, Union
 
 import numpy as np
 import torch
@@ -157,8 +157,7 @@ def _pad_to_max_length(current_segments, pad_token_id, padding="right", bos_toke
     return sequences
 
 
-@dataclass
-class WhisperLongformSegment:
+class WhisperLongformSegment(TypedDict):
     """
     Outputs for a single segment of longform generation
     """
@@ -183,7 +182,7 @@ class WhisperLongformGenerateOutput(ModelOutput):
     """
 
     sequences: torch.LongTensor
-    segments: Optional[List[WhisperLongformSegment]] = None
+    segments: Optional[List[List[WhisperLongformSegment]]] = None
 
 
 class WhisperGenerationMixin:
@@ -783,7 +782,8 @@ class WhisperGenerationMixin:
 
         if return_segments:
             return WhisperLongformGenerateOutput(
-                sequences, segments=[WhisperLongformSegment(**segment) for segment in final_segments]
+                sequences,
+                segments=final_segments,
             )
         # Explicitly check the generate function argument, not the generation_config we overrode for
         # individual segment generation
