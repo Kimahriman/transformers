@@ -1714,9 +1714,9 @@ class WhisperModelIntegrationTests(unittest.TestCase):
         # Forcing long form generation yields the same result
         generated_ids = model.generate(input_features, num_beams=5, max_length=20, force_longform=True)
         transcript = processor.tokenizer.decode(generated_ids[0])
-
+        # Long form always returns timestamps right now, so remove notimestamps token
         EXPECTED_TRANSCRIPT = (
-            "<|startoftranscript|><|en|><|transcribe|><|notimestamps|> Mr. Quilter is the apostle of the middle"
+            "<|startoftranscript|><|en|><|transcribe|> Mr. Quilter is the apostle of the middle"
             " classes and we are glad"
         )
         self.assertEqual(transcript, EXPECTED_TRANSCRIPT)
@@ -1740,6 +1740,13 @@ class WhisperModelIntegrationTests(unittest.TestCase):
         transcript = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
         EXPECTED_TRANSCRIPT = " Mr. Quilter is the apostle of the middle classes and we are glad"
+        self.assertEqual(transcript, EXPECTED_TRANSCRIPT)
+
+        # Same transcript with longform generation
+        generated_ids = model.generate(
+            input_features, do_sample=False, max_length=20, language="<|en|>", task="transcribe", force_longform=True
+        )
+        transcript = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         self.assertEqual(transcript, EXPECTED_TRANSCRIPT)
 
     @slow
