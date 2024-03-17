@@ -1072,15 +1072,15 @@ class WhisperGenerationMixin:
 
     @staticmethod
     def _set_return_timestamps(return_timestamps, is_shortform, generation_config):
-        # if not is_shortform:
-        #     if return_timestamps is False:
-        #         raise ValueError(
-        #             "You have passed more than 3000 mel input features (> 30 seconds) which automatically enables long-form generation which "
-        #             "requires the model to predict timestamp tokens. Please either pass `return_timestamps=True` or make sure to pass no more than 3000 mel input features."
-        #         )
+        if not is_shortform:
+            if return_timestamps is False:
+                raise ValueError(
+                    "You have passed more than 3000 mel input features (> 30 seconds) which automatically enables long-form generation which "
+                    "requires the model to predict timestamp tokens. Please either pass `return_timestamps=True` or make sure to pass no more than 3000 mel input features."
+                )
 
-        #     logger.info("Setting `return_timestamps=True` for long-form generation.")
-        #     return_timestamps = True
+            logger.info("Setting `return_timestamps=True` for long-form generation.")
+            return_timestamps = True
 
         if return_timestamps and not hasattr(generation_config, "no_timestamps_token_id"):
             raise ValueError(

@@ -1360,9 +1360,10 @@ class WhisperModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
                     prompt_ids=prompt_ids,
                     condition_on_prev_tokens=True,
                 )
-                for row in output.tolist():
-                    # make sure no token below 10 is in generated output => this means for long-form prompt ids should NOT be returned
-                    assert not any(i in row for i in model.generation_config.suppress_tokens)
+                # First tokens are prompt_ids, bos, language, and task, and then we shouldn't see
+                # any of the supressed tokens again
+                assert output[0, :8].tolist() == [*prompt_ids.tolist(), model.generation_config.decoder_start_token_id, lang_id, task_id]
+                assert not any(i in output[0, 8:] for i in model.generation_config.suppress_tokens)
 
     def _check_longform_generate_single_batch(self, condition_on_prev_tokens):
         config, input_dict = self.model_tester.prepare_config_and_inputs_for_common()
@@ -1702,6 +1703,16 @@ class WhisperModelIntegrationTests(unittest.TestCase):
         )
 
         generated_ids = model.generate(input_features, num_beams=5, max_length=20)
+        transcript = processor.tokenizer.decode(generated_ids[0])
+
+        EXPECTED_TRANSCRIPT = (
+            "<|startoftranscript|><|en|><|transcribe|><|notimestamps|> Mr. Quilter is the apostle of the middle"
+            " classes and we are glad"
+        )
+        self.assertEqual(transcript, EXPECTED_TRANSCRIPT)
+
+        # Forcing long form generation yields the same result
+        generated_ids = model.generate(input_features, num_beams=5, max_length=20, force_longform=True)
         transcript = processor.tokenizer.decode(generated_ids[0])
 
         EXPECTED_TRANSCRIPT = (
@@ -2156,7 +2167,7 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         transcription = processor.batch_decode(sequences)[0]
 
-        assert transcription == "<|startoftranscript|><|hi|><|transcribe|><|notimestamps|> मिर्ची में कितने विबिन्द प्रजातियां हैं? मिर्ची में कितने विबिन्द प्रजातियां हैं?<|endoftext|>"
+        assert transcription == "<|startoftranscript|><|hi|><|transcribe|> मिर्ची में कितने विबिन्द प्रजातियां हैं? मिर्ची में कितने विबिन्द प्रजातियां हैं?<|endoftext|>"
 
 
         sequences = model.generate(input_features, task='translate')
@@ -2164,7 +2175,7 @@ class WhisperModelIntegrationTests(unittest.TestCase):
 
         assert (
             transcription
-            == "<|startoftranscript|><|hi|><|translate|><|notimestamps|> How many different species are there in chilli? How many different species are there in the chilli?<|endoftext|>"
+            == "<|startoftranscript|><|hi|><|translate|> How many different species are there in the chilli? How many different species are there in the chilli?<|endoftext|>"
         )
 
     @slow
