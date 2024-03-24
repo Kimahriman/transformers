@@ -131,20 +131,25 @@ def _pad_to_max_length(current_segments, pad_token_id, padding="right", bos_toke
     if padding not in ["right", "left"]:
         raise ValueError(f"`padding` must be either 'right' or 'left', not {padding}")
 
-    for current_segment_list in current_segments:
+    for i, current_segment_list in enumerate(current_segments):
+        if bos_token_tensor is not None and len(bos_token_tensor.shape) > 1:
+            bos_tokens = bos_token_tensor[i]
+        else:
+            bos_tokens = bos_token_tensor
+
         if current_segment_list is not None and len([d["tokens"] for d in current_segment_list]) > 0:
             sequence = torch.cat([d["tokens"] for d in current_segment_list], dim=-1)
 
             if cut_off_length is not None:
                 sequence = sequence[-cut_off_length:]
 
-            if bos_token_tensor is not None:
-                sequence = torch.cat([bos_token_tensor, sequence])
+            if bos_tokens is not None:
+                sequence = torch.cat([bos_tokens, sequence])
 
             sequences.append(sequence)
             max_total_length = max(max_total_length, len(sequences[-1]))
-        elif bos_token_tensor is not None:
-            sequences.append(bos_token_tensor)
+        elif bos_tokens is not None:
+            sequences.append(bos_tokens)
         else:
             sequences.append(torch.tensor([]))
 
@@ -737,7 +742,7 @@ class WhisperGenerationMixin:
                 synced_gpus=synced_gpus,
                 return_token_timestamps=return_token_timestamps,
                 do_condition_on_prev_tokens=do_condition_on_prev_tokens,
-                kwargs=kwargs,
+                **kwargs,
             )
 
             # 6.9 In every generated sequence, split by timestamp tokens and extract segments
@@ -773,12 +778,14 @@ class WhisperGenerationMixin:
         )
 
         # Add back prompt ids and init tokens to the segments as if it was all done in one shot
-        init_tokens = torch.tensor(init_tokens, dtype=torch.long)
         if prompt_ids is not None:
-            init_tokens = torch.cat([prompt_ids, init_tokens])
+            init_tokens = torch.cat([prompt_ids.repeat(batch_size, 1), init_tokens], -1)
 
         sequences = _pad_to_max_length(
-            final_segments, generation_config.pad_token_id, padding="right", bos_token_tensor=init_tokens
+            final_segments,
+            generation_config.pad_token_id,
+            padding="right",
+            bos_token_tensor=init_tokens,
         )
 
         if return_segments:
@@ -810,7 +817,7 @@ class WhisperGenerationMixin:
         synced_gpus,
         return_token_timestamps,
         do_condition_on_prev_tokens,
-        kwargs,
+        **kwargs,
     ):
         # 6.6 Batch generate current chunk
         seek_sequence_list = [None for _ in range(cur_bsz)]
@@ -1201,7 +1208,7 @@ class WhisperGenerationMixin:
                     f"Expected length of {batch_size}, but got {len(language)}"
                 )
         else:
-            language = [language]  # Use a length-1 list now, broadcast later
+            language = [language] * batch_size
 
         # Separate init_tokens for each language
         init_tokens = [copy.deepcopy(init_tokens) for _ in language]
